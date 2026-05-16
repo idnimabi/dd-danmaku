@@ -42,6 +42,8 @@
             return corsProxy + 'https://api.dandanplay.net/api/v2';
         },
         getSearchEpisodes: (anime, episode, tmdbId) => `${dandanplayApi.prefix}/search/episodes?anime=${anime}${episode ? `&episode=${episode}` : ''}${tmdbId ? `&tmdbId=${tmdbId}` : ''}`,
+        getSearchEpisodesByTmdb: (tmdbId, episode) => `${dandanplayApi.prefix}/search/episodes?tmdbId=${tmdbId}${episode ? `&episode=${episode}` : ''}`,
+        getTmdbIdByAnime: (anime) => `${dandanplayApi.prefix}/search/tmdb?keyword=${anime}`,
         getComment: (episodeId, chConvert) => `${dandanplayApi.prefix}/comment/${episodeId}?withRelated=true&chConvert=${chConvert}`,
         getExtcomment: (url) => `${dandanplayApi.prefix}/extcomment?url=${encodeURI(url)}`,
         getBangumi: (animeId) => `${dandanplayApi.prefix}/bangumi/${animeId}`,
@@ -768,6 +770,55 @@
         return searchResult;
     }
 
+    async function fetchTmdbIdByAnime(anime) {
+        if (!anime) {
+            throw new Error('anime is required');
+        }
+        const url = dandanplayApi.getTmdbIdByAnime(anime);
+        let animaInfo = await fetchJson(url).catch((error) => {
+            console.log(`[TMDb降级] 查询TMDb ID失败:`, error);
+            return null;
+        });
+        console.log(`[TMDb降级] 查询TMDb ID结果`, animaInfo);
+
+        if (!animaInfo || !animaInfo.animes || animaInfo.animes.length === 0) {
+            // 检查anime是否包含空格，因为有第二季等，查询标题会是 xxxx 第二季，所以要拆分后使用 xxxx 来查询
+            if (anime.includes(' ')) {
+                const lastSpaceIndex = anime.lastIndexOf(' ');
+                const trimmedAnime = anime.substring(0, lastSpaceIndex);
+                console.log(`[TMDb降级] 尝试使用拆分后的标题: ${trimmedAnime}`);
+                return fetchTmdbIdByAnime(trimmedAnime);
+            }
+            return null;
+        }
+
+        // 优先使用tv的结果
+        const tvAnime = animaInfo.animes.find((anime) => anime.bangumiId && anime.bangumiId.startsWith('tmdb-tv-'));
+        if (tvAnime) {
+            return tvAnime.bangumiId.split('-')[2];
+        }
+
+        // 默认逻辑
+        const bangumiId = animaInfo.animes[0].bangumiId;
+        if (bangumiId && (bangumiId.startsWith('tmdb-tv-') || bangumiId.startsWith('tmdb-movie-'))) {
+            return bangumiId.split('-')[2];
+        }
+        return null;
+    }
+
+    async function fetchSearchEpisodesByTmdb(tmdbId, episode) {
+        if (!tmdbId) {
+            throw new Error('tmdbId is required');
+        }
+        const url = dandanplayApi.getSearchEpisodesByTmdb(tmdbId, episode);
+        const animaInfo = await fetchJson(url).catch((error) => {
+            console.log(`[TMDb降级] 通过TMDb ID查询剧集失败:`, error);
+            return null;
+        });
+        console.log(`[TMDb降级] 通过TMDb ID查询剧集结果`, animaInfo);
+        return animaInfo;
+    }
+
     async function fetchComment(episodeId) {
         // 优先使用当前匹配信息中记录的 API 地址
         const prefix = window.ede.episode_info?.apiPrefix || dandanplayApi.prefix;
@@ -1103,15 +1154,26 @@
         const animeOriginalTitle = seriesOrMovieInfo.OriginalTitle;
         rvt = await oriTitleAutoFailback(animeName, episodeIndex, animeOriginalTitle);
         if (rvt) { return rvt; }
+
+        rvt = await tmdbAutoFailback(animeName, episodeIndex);
+        if (rvt) { return rvt; }
     }
 
-    async function tmdbAutoFailback(animeName, episodeIndex, tmdbId) {
-        if (!tmdbId) { return null; }
-        console.log(`标题名: ${animeName},自动匹配未查询到结果,将使用元信息中的 tmdbId,重试一次`);
-        animaInfo = await fetchSearchEpisodes(animeOriginalTitle, episodeIndex);
-        if (animaInfo.animes.length < 1) { return null; }
-        console.log(`使用原标题名: ${animeOriginalTitle},自动匹配成功`);
-        return { animeName, animaInfo, animeOriginalTitle, };
+    async function tmdbAutoFailback(animeName, episodeIndex) {
+        console.log(`[TMDb降级] 标题名: ${animeName},自动匹配未查询到结果,将使用TMDb降级查询`);
+        const tmdbId = await fetchTmdbIdByAnime(animeName);
+        if (!tmdbId) {
+            console.log(`[TMDb降级] 未查询到TMDb ID,降级查询终止`);
+            return null;
+        }
+        console.log(`[TMDb降级] 查询到TMDb ID: ${tmdbId},开始通过TMDb ID查询剧集`);
+        const animaInfo = await fetchSearchEpisodesByTmdb(tmdbId, episodeIndex);
+        if (!animaInfo || !animaInfo.animes || animaInfo.animes.length < 1) {
+            console.log(`[TMDb降级] 通过TMDb ID查询剧集失败`);
+            return null;
+        }
+        console.log(`[TMDb降级] 通过TMDb ID查询成功, animeName: ${animeName}`);
+        return { animeName, animaInfo };
     }
 
     async function oriTitleAutoFailback(animeName, episodeIndex, animeOriginalTitle) {
