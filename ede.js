@@ -1148,13 +1148,6 @@
         let rvt = await movieAutoFailback(animeName, episodeIndex);
         if (rvt) { return rvt; }
 
-        const seriesOrMovieInfo = await ApiClient.getItem(ApiClient.getCurrentUserId(), seriesOrMovieId);
-        
-        
-        const animeOriginalTitle = seriesOrMovieInfo.OriginalTitle;
-        rvt = await oriTitleAutoFailback(animeName, episodeIndex, animeOriginalTitle);
-        if (rvt) { return rvt; }
-
         rvt = await tmdbAutoFailback(animeName, episodeIndex);
         if (rvt) { return rvt; }
     }
@@ -2533,12 +2526,17 @@
     async function afterEmbyDialogCreated(dialogContainer) {
         const itemInfoMap = await getMapByEmbyItemInfo();
         if (itemInfoMap) {
+            // 去除输入框关键词中的季数
+            let cleanAnimeName = itemInfoMap.animeName;
+            // 匹配并移除末尾的季数（如 " 2"、" Season 2"、" 第2季" 等）
+            cleanAnimeName = cleanAnimeName.replace(/\s+\d+$/, '').replace(/\s+Season\s*\d+$/i, '').replace(/\s+第\s*\d+\s*季$/i, '');
+            
             window.ede.searchDanmakuOpts = {
                 _id_key: itemInfoMap._id_key,
                 _season_key: itemInfoMap._season_key,
                 _episode_key: itemInfoMap._episode_key,
                 animeId: itemInfoMap.animeId,
-                animeName: itemInfoMap.animeName,
+                animeName: cleanAnimeName,
                 seriesOrMovieId: itemInfoMap.seriesOrMovieId,
                 episode: (parseInt(itemInfoMap.episode) || 1) - 1, // convert to index
                 animes: [],
