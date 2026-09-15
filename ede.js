@@ -980,6 +980,26 @@
         }
     }
 
+    // 把版本字符串转成数字数组，例如 "4.10.0.40" -> [4, 10, 0, 40]
+    function toVersionArray(str) {
+        return String(str).split('.').map(n => parseInt(n, 10) || 0);
+    }
+
+    // a > b 返回 1，a < b 返回 -1，相等返回 0
+    function compareVersion(a, b) {
+        const pa = toVersionArray(a);
+        const pb = toVersionArray(b);
+        const len = Math.max(pa.length, pb.length);
+
+        for (let i = 0; i < len; i++) {
+            const na = pa[i] || 0;
+            const nb = pb[i] || 0;
+            if (na > nb) return 1;
+            if (na < nb) return -1;
+        }
+        return 0;
+    }
+
     function initUI() {
         // 已初始化
         if (getById(eleIds.danmakuCtr)) {
@@ -988,7 +1008,8 @@
         console.log('正在初始化UI');
 
         // ApiClient.isMinServerVersion("4.8.0.00"); 可以精确对比客户端指定版本小于当前版本,但此处暂时不需要
-        if (parseFloat(ApiClient.serverVersion()) < 4.8) {
+        const serverVersion = ApiClient.serverVersion(); // "4.10.0.40"
+        if (compareVersion(serverVersion, '4.8.0') < 0) {
             mediaContainerQueryStr = 'div[data-type="video-osd"]';
             isVersionOld = true;
         }
@@ -2088,7 +2109,6 @@
         }
 
         if (!dandanplayApi.getApiPrefix()) {
-            appendvideoOsdDanmakuInfo();
             return null;
         }
         const unique_episode_key = lsLocalKeys.episodeMatchPrefix + _episode_key;
@@ -4302,8 +4322,7 @@
     }
 
     function appendvideoOsdDanmakuInfo(loadSum) {
-        const isProxyMissing = !dandanplayApi.getApiPrefix();
-        if (!isProxyMissing && !lsGetItem(lsKeys.osdTitleEnable.id)) {
+        if (!lsGetItem(lsKeys.osdTitleEnable.id)) {
             return;
         }
         const episode_info = window.ede.episode_info || {};
@@ -4316,10 +4335,8 @@
             videoOsdDanmakuTitle.classList.add(classes.videoOsdTitle);
             videoOsdDanmakuTitle.style = 'margin-left: auto; white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word; position: absolute; right: 0px; bottom: 0px;';
         }
-        let text = '';
-        if (isProxyMissing) {
-            text += `请先填写${lsKeys.customeCorsProxyUrl.name}`;
-        } else if (episodeId) {
+        let text = '弹幕：';
+        if (episodeId) {
             text += `${animeTitle} - ${episodeTitle} - ${loadSum}条`;
         } else {
             text += `未匹配`;
