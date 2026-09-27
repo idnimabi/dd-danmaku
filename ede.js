@@ -2234,8 +2234,14 @@
             return;
         }
         if (window.ede.danmaku != null) {
-            window.ede.danmaku.destroy();
+            if (typeof window.ede.danmaku.destroy === 'function') {
+                window.ede.danmaku.destroy();
+            }
             window.ede.danmaku = null;
+        }
+        const _media = document.querySelector(mediaQueryStr);
+        if (!_media) {
+            throw new Error('用户已退出视频播放');
         }
         window.ede.commentsOriginal = comments;
         const commentsParsed = danmakuParser(comments);
@@ -2243,16 +2249,6 @@
         let _comments = danmakuFilter(commentsParsed);
         console.log('[加载]弹幕成功: ' + _comments.length);
 
-        const _media = document.querySelector(mediaQueryStr);
-        if (!_media) {
-            // this only working on quickDebug
-            if (!window.ede.danmaku) {
-                window.ede.danmaku = { comments: _comments };
-            }
-            // 设置弹窗内的弹幕信息
-            buildCurrentDanmakuInfo(currentDanmakuInfoContainerId);
-            throw new Error('用户已退出视频播放');
-        }
         if (!isVersionOld) {
             _media.style.position = 'absolute';
         }
