@@ -2109,6 +2109,7 @@
         }
 
         if (!dandanplayApi.getApiPrefix()) {
+            appendvideoOsdDanmakuInfo();
             return null;
         }
         const unique_episode_key = lsLocalKeys.episodeMatchPrefix + _episode_key;
@@ -3764,13 +3765,7 @@
         getById(eleIds.osdCheckboxDiv).append(embyCheckbox(
             { label: lsKeys.osdTitleEnable.name }, lsGetItem(lsKeys.osdTitleEnable.id), (checked) => {
                 lsSetItem(lsKeys.osdTitleEnable.id, checked);
-                const videoOsdContainer = document.querySelector(`${mediaContainerQueryStr} .videoOsdSecondaryText`);
-                const videoOsdDanmakuTitle = getById(eleIds.videoOsdDanmakuTitle, videoOsdContainer);
-                if (videoOsdDanmakuTitle) {
-                    videoOsdDanmakuTitle.style.display = checked ? 'block' : 'none';
-                } else if (checked) {
-                    appendvideoOsdDanmakuInfo(getDanmakuComments(window.ede).length);
-                }
+                appendvideoOsdDanmakuInfo(window.ede.danmaku ? getDanmakuComments(window.ede).length : undefined);
             },
         ));
         getById(eleIds.osdCheckboxDiv).append(embyCheckbox(
@@ -4318,29 +4313,38 @@
     }
 
     function appendvideoOsdDanmakuInfo(loadSum) {
-        if (!lsGetItem(lsKeys.osdTitleEnable.id)) {
+        // 已加载成功的弹幕（如服务端 XML）无需代理，不显示配置提示。
+        const isProxyMissing = !dandanplayApi.getApiPrefix() && loadSum === undefined;
+        const videoOsdContainer = document.querySelector(`${mediaContainerQueryStr} .videoOsdSecondaryText`);
+        if (!videoOsdContainer) {
+            return;
+        }
+        let videoOsdDanmakuTitle = getById(eleIds.videoOsdDanmakuTitle, videoOsdContainer);
+        if (!isProxyMissing && !lsGetItem(lsKeys.osdTitleEnable.id)) {
+            if (videoOsdDanmakuTitle) {
+                videoOsdDanmakuTitle.remove();
+            }
             return;
         }
         const episode_info = window.ede.episode_info || {};
         const { episodeId, animeTitle, episodeTitle } = episode_info;
-        const videoOsdContainer = document.querySelector(`${mediaContainerQueryStr} .videoOsdSecondaryText`);
-        let videoOsdDanmakuTitle = getById(eleIds.videoOsdDanmakuTitle, videoOsdContainer);
         if (!videoOsdDanmakuTitle) {
             videoOsdDanmakuTitle = document.createElement('h3');
             videoOsdDanmakuTitle.id = eleIds.videoOsdDanmakuTitle;
             videoOsdDanmakuTitle.classList.add(classes.videoOsdTitle);
             videoOsdDanmakuTitle.style = 'margin-left: auto; white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word; position: absolute; right: 0px; bottom: 0px;';
         }
+        videoOsdDanmakuTitle.style.display = 'block';
         let text = '弹幕：';
-        if (episodeId) {
+        if (isProxyMissing) {
+            text += `请先填写${lsKeys.customeCorsProxyUrl.name}`;
+        } else if (episodeId) {
             text += `${animeTitle} - ${episodeTitle} - ${loadSum}条`;
         } else {
             text += `未匹配`;
         }
         videoOsdDanmakuTitle.innerText = text;
-        if (videoOsdContainer) {
-            videoOsdContainer.append(videoOsdDanmakuTitle);
-        }
+        videoOsdContainer.append(videoOsdDanmakuTitle);
     }
 
     function toggleSettingBtn2Header() {
@@ -5445,13 +5449,13 @@
 
     function onViewShow(e) {
         console.log(e.type, e);
+        if (!window.ede) {
+            window.ede = new EDE();
+        }
         customeUrl.init();
         lsGetItem(lsKeys.quickDebugOn.id) && !getById(eleIds.danmakuSettingBtnDebug) && quickDebug();
         addEasterEggListener();
         if (e.detail.type === 'video-osd') {
-            if (!window.ede) {
-                window.ede = new EDE();
-            }
             if (!window.ede.appLogAspect && lsGetItem(lsKeys.consoleLogEnable.id)) {
                 window.ede.appLogAspect = new AppLogAspect().init();
             }

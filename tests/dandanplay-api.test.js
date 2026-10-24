@@ -34,7 +34,7 @@ test('does not contain the retired hard-coded proxy endpoint', () => {
 
 test('forces an OSD proxy-configuration prompt when the proxy is missing', () => {
     assert.match(source, /if \(!dandanplayApi\.getApiPrefix\(\)\) \{\s*appendvideoOsdDanmakuInfo\(\);\s*return null;/);
-    assert.match(source, /const isProxyMissing = !dandanplayApi\.getApiPrefix\(\);/);
+    assert.match(source, /const isProxyMissing = !dandanplayApi\.getApiPrefix\(\) && loadSum === undefined;/);
     assert.match(source, /if \(!isProxyMissing && !lsGetItem\(lsKeys\.osdTitleEnable\.id\)\)/);
     assert.match(source, /text \+= `请先填写\$\{lsKeys\.customeCorsProxyUrl\.name\}`;/);
 });
