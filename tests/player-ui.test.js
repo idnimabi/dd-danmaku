@@ -5,7 +5,7 @@ import vm from 'node:vm';
 
 const source = await readFile(new URL('../ede.js', import.meta.url), 'utf8');
 const functionNames = [
-    'initUI', 'stopUIInit', 'toVersionArray', 'compareVersion', 'getById', 'getByClass',
+    'initUI', 'stopUIInit', 'finishUIWait', 'getVideoOsdView', 'isUIVisible', 'getActiveVideoOsdView', 'toVersionArray', 'compareVersion', 'getById', 'getByClass',
     'waitForElement', 'destroyAllInterval', 'addHeaderClock', 'removeHeaderClock',
     'onVideoOsdShow', 'onVideoOsdHide', 'beforeDestroy', 'videoTimeUpdateInterval',
     'createDanmaku', 'loadDanmaku', 'onPlaybackStart', 'onPlaybackStop',
@@ -19,12 +19,51 @@ const functions = functionNames.map(name => {
 // A small DOM fixture for the selectors and node moves used by the player UI.
 class Element {
     constructor(tagName = 'div', className = '') {
+        this.observers = [];
         this.tagName = tagName;
         this.className = className;
         this.id = '';
         this.children = [];
         this.parentNode = null;
         this.style = {};
+    }
+
+    get className() {
+        return this._className;
+    }
+
+    set className(value) {
+        this._className = value;
+        this.notifyMutation('attributes');
+    }
+
+    get parentElement() {
+        return this.parentNode?.tagName === '#document' ? null : this.parentNode;
+    }
+
+    notifyMutation(type) {
+        for (let node = this; node; node = node.parentNode) {
+            for (const { observer, options } of node.observers) {
+                if ((node === this || options.subtree) && options[type === 'attributes' ? 'attributes' : 'childList']) {
+                    observer.records.push({ type, target: this });
+                }
+            }
+        }
+    }
+
+    getClientRects() {
+        if (!this.isConnected) return [];
+        for (let node = this; node; node = node.parentNode) {
+            if (node.className.split(' ').some(name => ['hide', 'page-hidden'].includes(name)) || node.style.display === 'none' || node.hidden) return [];
+        }
+        return [{}];
+    }
+
+    closest(selector) {
+        for (let node = this; node; node = node.parentElement) {
+            if (node.matches(selector)) return node;
+        }
+        return null;
     }
 
     get isConnected() {
@@ -35,6 +74,7 @@ class Element {
         child.remove();
         this.children.push(child);
         child.parentNode = this;
+        this.notifyMutation('childList');
     }
 
     appendChild(child) {
@@ -45,6 +85,7 @@ class Element {
         child.remove();
         this.children.unshift(child);
         child.parentNode = this;
+        this.notifyMutation('childList');
     }
 
     insertBefore(child, reference) {
@@ -52,11 +93,13 @@ class Element {
         child.remove();
         this.children.splice(this.children.indexOf(reference), 0, child);
         child.parentNode = this;
+        this.notifyMutation('childList');
     }
 
     remove() {
         if (this.parentNode) {
             this.parentNode.children = this.parentNode.children.filter(child => child !== this);
+            this.parentNode.notifyMutation('childList');
             this.parentNode = null;
         }
     }
@@ -113,6 +156,7 @@ function setup({ buttonsReady = true, serverVersion = '4.8.10.0', clockEnabled =
 
     const intervals = new Map();
     const timeouts = new Map();
+    const observers = new Set();
     const settings = { clock: clockEnabled, height: 100, speed: 1, engine: 'canvas', switch: true, offset: 5 };
     const calls = { loads: [], created: [], cleared: 0, destroyed: 0, observed: [], disconnected: 0, stopPct: 0, filterCancelled: 0 };
     let time = Date.UTC(2026, 9, 25, 12);
@@ -126,6 +170,26 @@ function setup({ buttonsReady = true, serverVersion = '4.8.10.0', clockEnabled =
         clearInterval(id) { intervals.delete(id); },
         setTimeout(callback) { const id = nextId++; timeouts.set(id, callback); return id; },
         clearTimeout(id) { timeouts.delete(id); },
+        getComputedStyle: element => ({ visibility: element.style.visibility || 'visible' }),
+        MutationObserver: class {
+            constructor(callback) {
+                this.callback = callback;
+                this.targets = new Set();
+                this.records = [];
+                observers.add(this);
+            }
+            observe(target, options) {
+                this.targets.add(target);
+                target.observers.push({ observer: this, options });
+            }
+            disconnect() {
+                for (const target of this.targets) {
+                    target.observers = target.observers.filter(entry => entry.observer !== this);
+                }
+                this.targets.clear();
+                this.records = [];
+            }
+        },
         Date: class extends Date {
             constructor() { super(time); }
         },
@@ -156,6 +220,8 @@ function setup({ buttonsReady = true, serverVersion = '4.8.10.0', clockEnabled =
         let mediaContainerQueryStr = '.graphicContentContainer';
         let isVersionOld = false;
         let uiInitIntervalId = null;
+        let uiObserver = null;
+        let uiView = null;
         let headerClockIntervalId = null;
         const notHide = ':not(.hide)';
         const mediaQueryStr = 'video';
@@ -180,11 +246,15 @@ function setup({ buttonsReady = true, serverVersion = '4.8.10.0', clockEnabled =
         ${functions}
     `, context);
     return {
-        context, document, header, page, controls, buttons, media, intervals, timeouts, settings, calls,
+        context, document, header, page, controls, buttons, media, intervals, timeouts, observers, settings, calls,
         advanceTime(ms) { time += ms; },
         tick() {
             for (const [id, callback] of Array.from(intervals)) {
                 if (intervals.has(id)) callback();
+            }
+            for (const observer of observers) {
+                const records = observer.records.splice(0);
+                if (records.length) observer.callback(records);
             }
         },
         menu: () => document.querySelector('#danmakuCtr'),
@@ -221,6 +291,7 @@ test('repeated entries create exactly two buttons and release all timers on exit
         assert.equal(h.menu(), null);
         assert.equal(h.document.querySelector('#headerClock'), null);
         assert.equal(h.intervals.size, 0);
+        assert.ok(Array.from(h.observers).every(observer => observer.targets.size === 0));
     }
 });
 
@@ -393,7 +464,7 @@ test('the clock updates, hides, resumes and respects the disabled setting', () =
 test('playback stop still removes the clock and invokes progress and filter cleanup', () => {
     const h = setup();
     h.context.onVideoOsdShow({ type: 'video-osd-show' });
-    h.context.onPlaybackStop({ type: 'playbackstop' }, {});
+    h.context.onPlaybackStop({ type: 'playbackstop' }, { NowPlayingItem: { Id: 'current-item' } });
     assert.equal(h.document.querySelector('#headerClock'), null);
     assert.equal(h.intervals.size, 0);
     assert.equal(h.calls.stopPct, 1);
@@ -439,4 +510,228 @@ test('pending button initialization is cancelled on exit with the clock disabled
     h.tick();
     assert.equal(h.menu(), null);
     assert.equal(h.intervals.size, 0);
+});
+
+test('re-entry mounts buttons in the event view even without the backdrop class', () => {
+    const h = setup();
+    h.context.onVideoOsdShow({ type: 'video-osd-show', target: h.page });
+    h.leave();
+    // Emby 4.10 uses this stable view class and changes graphicContentContainer with the backdrop.
+    h.page.className = 'view view-videoosd-videoosd';
+    h.context.onVideoOsdShow({ type: 'video-osd-show', target: h.page });
+    h.tick();
+    assert.equal(h.buttons.querySelector('#danmakuCtr')?.children.length, 2);
+});
+
+test('a cached player under a hidden ancestor cannot capture the current view buttons', () => {
+    const h = setup();
+    const cache = new Element('div', 'hide');
+    const oldPage = new Element('div', 'graphicContentContainer');
+    const oldControls = new Element('div', 'videoOsdBottom-maincontrols');
+    const oldButtons = new Element('div', 'videoOsdBottom-buttons');
+    oldControls.append(oldButtons);
+    oldPage.append(oldControls);
+    cache.append(oldPage);
+    h.document.insertBefore(cache, h.page);
+    h.context.onVideoOsdShow({ type: 'video-osd-show', target: h.page });
+    h.tick();
+    assert.equal(h.buttons.querySelector('#danmakuCtr')?.children.length, 2);
+    assert.equal(oldButtons.querySelector('#danmakuCtr'), null);
+});
+
+test('buttons recover if Emby rebuilds the control area after the show event', () => {
+    const h = setup();
+    h.context.onVideoOsdShow({ type: 'video-osd-show', target: h.page });
+    assert.equal(h.menu().children.length, 2);
+    h.buttons.remove();
+    const replacement = new Element('div', 'videoOsdBottom-buttons');
+    h.controls.append(replacement);
+    h.tick();
+    assert.equal(replacement.querySelector('#danmakuCtr')?.children.length, 2);
+});
+
+test('late cleanup from a cached player leaves the active player and clock intact', () => {
+    const h = setup();
+    h.context.onVideoOsdShow({ type: 'video-osd-show', target: h.page });
+    const oldPage = new Element('div', 'view-videoosd-videoosd');
+    h.document.append(oldPage);
+    h.context.beforeDestroy({ detail: { type: 'video-osd' }, target: oldPage });
+    assert.equal(h.menu()?.parentNode, h.buttons);
+    assert.ok(h.document.querySelector('#headerClock'));
+    assert.equal(h.settings.offset, 5);
+    h.context.beforeDestroy({ detail: { type: 'video-osd' }, target: h.page });
+    h.controls.append(new Element());
+    h.tick();
+    assert.equal(h.menu(), null);
+    assert.ok(Array.from(h.observers).every(observer => observer.targets.size === 0));
+});
+
+test('danmaku animation subtree changes do not trigger UI repair', () => {
+    const h = setup();
+    h.context.onVideoOsdShow({ type: 'video-osd-show', target: h.page });
+    const stage = new Element();
+    stage.id = 'danmakuWrapper';
+    h.page.append(stage);
+    h.tick();
+    for (let index = 0; index < 100; index++) stage.append(new Element());
+    assert.ok(Array.from(h.observers).every(observer => observer.records.length === 0));
+});
+
+test('re-entry renders danmaku in the current view instead of a cached page-hidden player', async () => {
+    const h = setup();
+    const cachedPage = new Element('div', 'view-videoosd-videoosd graphicContentContainer page-hidden');
+    h.document.insertBefore(cachedPage, h.page);
+    h.context.onVideoOsdShow({ type: 'video-osd-show', target: h.page });
+    const pending = h.context.createDanmaku([{ text: 'current player', time: 1 }]);
+    h.tick();
+    await pending;
+    assert.equal(h.context.window.ede.danmaku.options.container.parentNode, h.page);
+    assert.equal(cachedPage.querySelector('#danmakuWrapper'), null);
+    assert.deepEqual(h.calls.observed, [h.page]);
+});
+
+test('danmaku follows the event view when Emby removes the backdrop class', async () => {
+    const h = setup();
+    h.page.className = 'view-videoosd-videoosd';
+    h.context.onVideoOsdShow({ type: 'video-osd-show', target: h.page });
+    const pending = h.context.createDanmaku([{ text: 'no backdrop class', time: 1 }]);
+    h.tick();
+    await pending;
+    assert.equal(h.context.window.ede.danmaku.options.container.parentNode, h.page);
+});
+
+test('danmaku waits for the current view to become visible and ignores cached players', async () => {
+    const h = setup();
+    const cachedPage = new Element('div', 'graphicContentContainer page-hidden');
+    h.document.insertBefore(cachedPage, h.page);
+    h.page.className = 'view-videoosd-videoosd page-hidden';
+    h.context.onVideoOsdShow({ type: 'video-osd-show', target: h.page });
+    const pending = h.context.createDanmaku([{ text: 'wait for current player', time: 1 }]);
+    h.tick();
+    assert.equal(h.calls.created.length, 0);
+    h.page.className = 'view-videoosd-videoosd';
+    h.tick();
+    await pending;
+    assert.equal(h.context.window.ede.danmaku.options.container.parentNode, h.page);
+    h.leave();
+    assert.equal(h.intervals.size, 0);
+    assert.equal(h.timeouts.size, 0);
+});
+
+async function sourceRenderScene() {
+    const h = setup();
+    const names = ['getExtCommentVersion', 'addExtComments', 'removeExtComment', 'commentIdentity', 'mergeCommentSources'];
+    vm.runInContext('let commentCacheGeneration = 0;\n' + names.map(name =>
+        source.match(new RegExp(`^    (?:async )?function ${name}\\([^]*?^    }`, 'm'))[0]).join('\n'), h.context);
+    const main = [{ cid: 'main' }], a = [{ cid: 'A' }], b = [{ cid: 'B' }];
+    const ede = h.context.window.ede;
+    Object.assign(ede, {
+        itemId: 'item', episode_info: { episodeId: 111 }, danmuCache: { 111: main },
+        extCommentCache: { item: { 'https://A': a, 'https://B': b } },
+    });
+    h.context.console.warn = () => {};
+    h.context.getMatchContext = () => ({});
+    h.context.isMatchContextCurrent = () => true;
+    h.context.buildExtUrlsDiv = () => {};
+    h.calls.toasts = [];
+    h.context.embyToast = ({ text }) => h.calls.toasts.push(text);
+    const initial = h.context.createDanmaku([...main, ...a, ...b]);
+    h.tick();
+    await initial;
+    return { ...h, ede };
+}
+
+test('real rendering keeps main and B when A is removed and its immediate re-add fails', async () => {
+    for (const failureFirst of [true, false]) {
+        const h = await sourceRenderScene();
+        const oldEngine = h.ede.danmaku;
+        const oldWrapper = h.document.querySelector('#danmakuWrapper');
+        let fail;
+        h.context.fetchExtcommentActual = () => new Promise((resolve, reject) => { fail = reject; });
+        const removing = h.context.removeExtComment('https://A');
+        const adding = h.context.addExtComments('https://A');
+        assert.equal(h.ede.danmaku, oldEngine, 'keep the existing engine while the removal waits for its container');
+        assert.equal(oldWrapper.isConnected, true);
+        assert.equal(h.calls.destroyed, 0);
+        if (failureFirst) {
+            fail(new Error('HTTP 429'));
+            await adding;
+        }
+        h.tick();
+        await removing;
+        assert.deepEqual(Array.from(h.ede.danmaku.options.comments, c => c.cid), ['main', 'B']);
+        if (!failureFirst) {
+            fail(new Error('HTTP 429'));
+            await adding;
+        }
+        assert.deepEqual(Array.from(h.ede.danmaku.options.comments, c => c.cid), ['main', 'B']);
+        assert.equal(h.ede.extCommentCache.item['https://A'], undefined);
+        assert.equal(h.calls.destroyed, 1);
+        assert.equal(h.calls.disconnected, 1);
+        assert.equal(h.document.querySelectorAll('#danmakuWrapper').length, 1);
+        assert.match(h.calls.toasts.at(-1), /保留当前弹幕/);
+    }
+});
+
+test('a successful re-add replaces the pending removal only when its real render is ready', async () => {
+    const h = await sourceRenderScene();
+    const oldEngine = h.ede.danmaku;
+    const removing = h.context.removeExtComment('https://A');
+    const adding = h.context.addExtComments('https://A', [{ cid: 'new-A' }]);
+    assert.equal(h.ede.danmaku, oldEngine);
+    h.tick();
+    await Promise.all([removing, adding]);
+    assert.deepEqual(Array.from(h.ede.danmaku.options.comments, c => c.cid), ['main', 'B', 'new-A']);
+    assert.equal(h.calls.created.length, 2);
+    assert.equal(h.calls.destroyed, 1);
+    assert.equal(h.document.querySelectorAll('#danmakuWrapper').length, 1);
+});
+
+test('a cancelled real render preserves the previous engine, wrapper, observer and displayed metadata', async () => {
+    const h = await sourceRenderScene();
+    const previous = { engine: h.ede.danmaku, wrapper: h.document.querySelector('#danmakuWrapper'),
+        observer: h.ede.ob, original: h.ede.commentsOriginal, parsed: h.ede.commentsParsed };
+    let current = true;
+    const pending = h.context.createDanmaku([{ cid: 'obsolete' }], () => current);
+    current = false;
+    h.tick();
+    await pending;
+    assert.equal(h.ede.danmaku, previous.engine);
+    assert.equal(h.document.querySelector('#danmakuWrapper'), previous.wrapper);
+    assert.equal(h.ede.ob, previous.observer);
+    assert.equal(h.ede.commentsOriginal, previous.original);
+    assert.equal(h.ede.commentsParsed, previous.parsed);
+    assert.equal(h.calls.destroyed, 0);
+    assert.equal(h.calls.disconnected, 0);
+});
+
+test('failed render preparation retains the current display and removes only the unfinished candidate', async () => {
+    for (const failure of ['timeout', 'parser', 'engine', 'observer']) {
+        const h = await sourceRenderScene();
+        const previous = { engine: h.ede.danmaku, wrapper: h.document.querySelector('#danmakuWrapper'),
+            observer: h.ede.ob, original: h.ede.commentsOriginal, parsed: h.ede.commentsParsed };
+        if (failure === 'parser') h.context.danmakuParser = () => { throw new Error('parser failure'); };
+        if (failure === 'engine') h.context.Danmaku = class { constructor() { throw new Error('engine failure'); } };
+        if (failure === 'observer') h.context.ResizeObserver = class {
+            observe() { throw new Error('observer failure'); }
+            disconnect() {}
+        };
+        let oldDestroyed = false;
+        previous.engine.destroy = () => { oldDestroyed = true; };
+        const pending = h.context.createDanmaku([{ cid: 'replacement' }]);
+        const rejected = assert.rejects(pending, /failure|not found/);
+        if (failure === 'timeout') {
+            for (const callback of Array.from(h.timeouts.values())) callback();
+        } else h.tick();
+        await rejected;
+        assert.equal(h.ede.danmaku, previous.engine, failure);
+        assert.equal(h.document.querySelector('#danmakuWrapper'), previous.wrapper, failure);
+        assert.equal(h.ede.ob, previous.observer, failure);
+        assert.equal(h.ede.commentsOriginal, previous.original, failure);
+        assert.equal(h.ede.commentsParsed, previous.parsed, failure);
+        assert.equal(oldDestroyed, false, failure);
+        assert.equal(h.calls.disconnected, 0, failure);
+        assert.deepEqual(h.page.children, [previous.wrapper, h.controls], failure);
+        if (failure === 'observer') assert.equal(h.calls.destroyed, 1, 'destroy only the uncommitted engine');
+    }
 });

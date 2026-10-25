@@ -17,7 +17,7 @@ test('uses a single official prefix for search, comments, metadata, and match re
     assert.match(source, /async function fetchSearchEpisodes\(anime, episode\)/);
     assert.match(source, /async function fetchTmdbIdByAnime\(anime\)/);
     assert.match(source, /async function fetchSearchEpisodesByTmdb\(tmdbId, episode\)/);
-    assert.match(source, /async function fetchComment\(episodeId\)/);
+    assert.match(source, /async function fetchComment\(episodeId, options = \{\}\)/);
     assert.match(source, /const prefix = dandanplayApi\.getApiPrefix\(\);/);
     assert.doesNotMatch(source, /apiPrefix|apiName/);
 });
