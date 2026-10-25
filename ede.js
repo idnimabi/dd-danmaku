@@ -72,6 +72,8 @@
     let mediaContainerQueryStr = '.graphicContentContainer';
     const notHide = ':not(.hide)';
     const mediaQueryStr = 'video';
+    let uiInitIntervalId = null;
+    let headerClockIntervalId = null;
 
     // https://fonts.google.com/icons
     const iconKeys = {
@@ -965,6 +967,7 @@
 
     function onVideoOsdShow(e) {
         console.log(e.type, e);
+        initUI();
         if (lsGetItem(lsKeys.osdLineChartEnable.id)) {
             buildProgressBarChart(20);
         }
@@ -1000,13 +1003,15 @@
         return 0;
     }
 
-    function initUI() {
-        // 已初始化
-        if (getById(eleIds.danmakuCtr)) {
-            return;
+    function stopUIInit() {
+        if (uiInitIntervalId !== null) {
+            clearInterval(uiInitIntervalId);
+            uiInitIntervalId = null;
         }
-        console.log('正在初始化UI');
+    }
 
+    function initUI() {
+        stopUIInit();
         // ApiClient.isMinServerVersion("4.8.0.00"); 可以精确对比客户端指定版本小于当前版本,但此处暂时不需要
         const serverVersion = ApiClient.serverVersion(); // "4.10.0.40"
         if (compareVersion(serverVersion, '4.8.0') < 0) {
@@ -1017,34 +1022,46 @@
             mediaContainerQueryStr += notHide;
         }
 
-        // 弹幕按钮父容器 div,延时判断,精确 dom query 时播放器 UI 小概率暂未渲染
+        // 等实际按钮区域就绪；外层控制栏可能先出现，内部区域稍后才渲染。
         const ctrlWrapperQueryStr = `${mediaContainerQueryStr} .videoOsdBottom-maincontrols`;
-        waitForElement(ctrlWrapperQueryStr, (wrapper) => {
-            const commonWrapper = getByClass(classes.videoOsdBottomButtons += notHide, wrapper);
-            if (commonWrapper) {
-                wrapper = commonWrapper;
-            } else {
-                // Emby 客户端启动时会检测鼠标设备,无鼠标时, commonWrapper 将会 hide
-                // 手动模拟无鼠标步骤为浏览器页签打开后不要动鼠标,仅使用键盘操作
-                wrapper = getByClass(classes.videoOsdBottomButtonsTopRight, wrapper);
+        function mountButtons() {
+            const controls = document.querySelector(ctrlWrapperQueryStr);
+            // 无鼠标/TV 布局可能隐藏底部区域，此时使用右上方区域。
+            const wrapper = getByClass(classes.videoOsdBottomButtons + notHide, controls)
+                || getByClass(classes.videoOsdBottomButtonsTopRight + notHide, controls);
+            if (!wrapper) {
+                return false;
             }
+            let menubar = getById(eleIds.danmakuCtr);
+            if (menubar && menubar.parentNode === wrapper) {
+                return true;
+            }
+            if (!menubar) {
+                menubar = document.createElement('div');
+                menubar.id = eleIds.danmakuCtr;
+                mediaBtnOpts.forEach(opt => {
+                    menubar.appendChild(embyButton(opt, opt.onClick));
+                });
+            }
+            // 旧页面残留或布局切换时，将现有按钮移到当前可用区域。
+            menubar.style.opacity = window.ede.episode_info ? 1 : 0.5;
             // 在老客户端上存在右侧按钮,在右侧按钮前添加
             const rightButtons = getByClass(classes.videoOsdBottomButtonsRight, wrapper);
-            const menubar = document.createElement('div');
-            menubar.id = eleIds.danmakuCtr;
-            if (!window.ede.episode_info) {
-                menubar.style.opacity = 0.5;
-            }
             if (rightButtons) {
                 wrapper.insertBefore(menubar, rightButtons);
             } else {
                 wrapper.append(menubar);
             }
-            mediaBtnOpts.forEach(opt => {
-                menubar.appendChild(embyButton(opt, opt.onClick));
-            });
             console.log('UI初始化完成');
-        }, 0);
+            return true;
+        }
+        if (!mountButtons()) {
+            uiInitIntervalId = setInterval(() => {
+                if (mountButtons()) {
+                    stopUIInit();
+                }
+            }, check_interval);
+        }
     }
 
     async function getEmbyItemInfo() {
@@ -5283,42 +5300,39 @@
     }
 
     function removeHeaderClock() {
+        // 时钟隐藏不应取消按钮初始化、弹幕容器等其他等待任务。
+        if (headerClockIntervalId !== null) {
+            clearInterval(headerClockIntervalId);
+            headerClockIntervalId = null;
+        }
         const headerClockEle = getById('headerClock');
         if (headerClockEle) {
             headerClockEle.remove();
         }
-        destroyAllInterval();
     }
 
     function addHeaderClock() {
+        removeHeaderClock();
         const warpper = getByClass('headerMiddle');
-        let headerClockEle = getById('headerClock');
         if (!warpper) {
             return;
         }
-        if (headerClockEle) {
-            headerClockEle.remove();
-        }
-
         const clockElement = document.createElement('div');
         clockElement.id = 'headerClock';
         warpper.append(clockElement);
 
         function updateClock() {
+            if (!clockElement.isConnected) {
+                removeHeaderClock();
+                return;
+            }
             const timeString = new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
             clockElement.textContent = timeString;
-            // console.log(timeString);
-            headerClockEle = getById('headerClock');
-            if (!headerClockEle) {
-                clearInterval(intervalId);
-            }
         }
 
+        headerClockIntervalId = setInterval(updateClock, 1000);
         updateClock();
-        const intervalId = setInterval(updateClock, 1000);
-
-        window.ede.destroyIntervalIds.push(intervalId);
-        return intervalId;
+        return headerClockIntervalId;
     }
 
     function refreshEventListener(eventsMap) {
@@ -5426,6 +5440,8 @@
         if (e.detail.type !== 'video-osd') {
             return;
         }
+        stopUIInit();
+        removeHeaderClock();
         // 此段销毁不重要,可有可无,仅是规范使用,清除弹幕,但未销毁 danmaku 实例
         if (window.ede.danmaku) {
             window.ede.danmaku.clear();
